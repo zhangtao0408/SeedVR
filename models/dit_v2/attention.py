@@ -13,10 +13,27 @@
 # // limitations under the License.
 
 import torch
+
+try:
+    from flash_attn import flash_attn_varlen_func
+except:
+    flash_attn_varlen_func = None
+    print('Note!!!!!! flash_attn is not avaliable!')
+
+try:
+    import torch_npu
+    npu_available = True
+except ImportError:
+    npu_available = False
+
+try:
+    import mindiesd
+    from mindiesd import attention_forward_varlen
+    mindiesd_available = True
+except:
+    mindiesd_available = False
+
 import torch.nn.functional as F
-
-from flash_attn import flash_attn_varlen_func
-
 from torch import nn
 
 class TorchAttention(nn.Module):
@@ -42,5 +59,44 @@ class FlashAttentionVarlen(nn.Module):
         return h * (4 * d * (seqlens_q * seqlens_k).sum())
 
     def forward(self, *args, **kwargs):
+        if npu_available:
+            return self._forward_npu(*args, **kwargs)
+        else:
+            return self._forward_gpu(*args, **kwargs)
+
+    def _forward_gpu(self, *args, **kwargs):
         kwargs["deterministic"] = torch.are_deterministic_algorithms_enabled()
         return flash_attn_varlen_func(*args, **kwargs)
+
+    def _forward_npu(self, *args, **kwargs):
+        del kwargs['max_seqlen_q']
+        del kwargs['max_seqlen_k']
+
+        if isinstance(kwargs['cu_seqlens_q'], torch.Tensor):
+            kwargs['cu_seqlens_q'] = kwargs['cu_seqlens_q'].tolist()
+        if isinstance(kwargs['cu_seqlens_k'], torch.Tensor):
+            kwargs['cu_seqlens_k'] = kwargs['cu_seqlens_k'].tolist()
+
+        if mindiesd_available:
+            output = attention_forward_varlen(*args, **kwargs)
+        else:
+            _, num_heads, head_dim = kwargs['q'].shape
+            atten_mask = None
+            sparse_mode = 0
+
+            output = torch_npu.npu_fusion_attention(
+                query=kwargs['q'],
+                key=kwargs['k'],
+                value=kwargs['v'],
+                head_num=num_heads,
+                pse=None,
+                padding_mask=None,
+                atten_mask=atten_mask,
+                scale=1.0 / (head_dim ** 0.5),
+                keep_prob=1,
+                input_layout="TND",
+                actual_seq_qlen=kwargs['cu_seqlens_q'][1:],
+                actual_seq_kvlen=kwargs['cu_seqlens_k'][1:],
+                sparse_mode=sparse_mode,
+            )[0]
+        return output

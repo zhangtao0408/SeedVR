@@ -14,6 +14,14 @@
 
 import os
 import torch
+
+try:
+    import torch_npu
+    from torch_npu.contrib import transfer_to_npu
+    npu_available = True
+except ImportError:
+    npu_available = False
+
 import mediapy
 from einops import rearrange
 from omegaconf import OmegaConf
@@ -67,7 +75,10 @@ def is_image_file(filename):
     return os.path.splitext(filename.lower())[1] in image_exts
 
 def configure_runner(sp_size):
-    config_path = os.path.join('./configs_3b', 'main.yaml')
+    if npu_available:
+        config_path = os.path.join('./configs_3b', 'main_npu.yaml')
+    else:
+        config_path = os.path.join('./configs_3b', 'main.yaml')
     config = load_config(config_path)
     runner = VideoDiffusionInfer(config)
     OmegaConf.set_readonly(runner.config, False)
