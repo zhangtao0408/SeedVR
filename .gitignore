@@ -27,3 +27,4 @@ __pycache__
 
 # ascend ignore
 fusion_result.json
+kernel_meta/
