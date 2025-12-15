@@ -1,4 +1,6 @@
-export ASCEND_RT_VISIBLE_DEVICES=7
+NUM_GPU=4
+
+export ASCEND_RT_VISIBLE_DEVICES=4,5,6,7
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 
 export CPLUS_INCLUDE_PATH=/usr/include/c++/12/:/usr/include/c++/12/aarch64-openEuler-linux/:$CPLUS_INCLUDE_PATH
@@ -22,10 +24,13 @@ else
     echo "Jemalloc is not installed"
 fi
 
-torchrun --nproc-per-node=1 ./projects/inference_seedvr2_3b.py \
+torchrun --nproc-per-node=$NUM_GPU ./projects/inference_seedvr2_3b.py \
     --video_path ./examples/test_videos \
     --output_dir ./examples/results \
     --seed 666 \
     --res_h 1280 \
     --res_w 720 \
-    --sp_size 1
+    --sp_size $NUM_GPU \
+    --vae_offload False \
+    --dit_offload False \
+    --empty_cache False
