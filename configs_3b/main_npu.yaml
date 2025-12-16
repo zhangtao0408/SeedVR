@@ -51,8 +51,8 @@ vae:
     split_size: 4
     memory_device: same
   memory_limit:
-    conv_max_mem: 0.5
-    norm_max_mem: 0.5
+    conv_max_mem: 1.0
+    norm_max_mem: 1.0
   checkpoint: ./ckpts/ema_vae.pth
   scaling_factor: 0.9152
   compile: False
