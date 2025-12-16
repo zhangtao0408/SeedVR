@@ -66,6 +66,7 @@ from common.distributed.ops import sync_data
 from common.seed import set_seed
 from common.partition import partition_by_groups, partition_by_size
 
+from npu_utils.tools import Profiling
 
 def configure_sequence_parallel(sp_size):
     if sp_size > 1:
@@ -272,6 +273,14 @@ def generation_loop(
             Rearrange("t c h w -> c t h w"),
         ]
     )
+    
+    prof = Profiling(
+        wait=0,
+        warmup=1,
+        active=1,
+        repeat=0,
+        skip_first=0
+    )
 
     # generation loop
     for videos, text_embeds in tqdm(zip(original_videos_local, positive_prompts_embeds)):
@@ -297,6 +306,7 @@ def generation_loop(
         ori_lengths = [video.size(1) for video in cond_latents]
         input_videos = cond_latents
 
+        prof.start()
         # Warmup
         if warmup:
             cond_latents_tmp = [cut_videos(video, sp_size) for video in cond_latents]
@@ -324,6 +334,8 @@ def generation_loop(
             if empty_cache:
                 gc.collect()
                 torch.cuda.empty_cache()
+
+            prof.step()
 
         total_time = time.time()
         preprocess_time = time.time()
@@ -396,9 +408,12 @@ def generation_loop(
                     )
         post_process_time = time.time() - post_process_time
         total_time = time.time() - total_time
+
+        prof.step()
         if int(os.getenv("RANK", 0)) == 0:
             print(f"Total time: {total_time} seconds, Preprocess time: {preprocess_time} seconds, Encode time: {encode_time} seconds, DIT time: {dit_time} seconds, Post process time: {post_process_time} seconds")
-        
+
+        prof.stop()
         if empty_cache:
             gc.collect()
             torch.cuda.empty_cache()
