@@ -14,6 +14,7 @@ JEMALLOC_X86_PATH="/usr/local/Ascend/ascend-toolkit/latest/x86-linux/lib64/libje
 PLATFORM=$(uname -m)
 if [ "$PLATFORM" == "aarch64" ]; then
     JEMALLOC_PATH=$JEMALLOC_ARM_PATH
+    export CPLUS_INCLUDE_PATH=/usr/include/c++/12/:/usr/include/c++/12/aarch64-openEuler-linux/:$CPLUS_INCLUDE_PATH
 else
     JEMALLOC_PATH=$JEMALLOC_X86_PATH
 fi
@@ -23,6 +24,13 @@ if [ -f "$JEMALLOC_PATH" ]; then
 else
     echo "Jemalloc is not installed"
 fi
+
+
+# Profiling
+export PROFILING_ENABLE=0                                               # 0: disable, 1: enable
+export PROFILING_LEVEL=1                                                # 0: Level0, 1: Level1, 2: Level2
+export PROFILING_DIR=./prof                                             # profiling dir (default: ./prof)
+export PROFILING_PYTHON_STACK=0                                         # enable python stack (default: 0)
 
 torchrun --nproc-per-node=$NUM_GPU ./projects/inference_seedvr2_3b.py \
     --video_path ./examples/test_videos \

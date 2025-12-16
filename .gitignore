@@ -28,3 +28,5 @@ __pycache__
 # ascend ignore
 fusion_result.json
 kernel_meta/
+prof/
+export_only_prof_dir/
