@@ -403,6 +403,16 @@ def generation_loop(
             gc.collect()
             torch.cuda.empty_cache()
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("yes", "true", "t", "1"):
+        return True
+    elif v.lower() in ("no", "false", "f", "0"):
+        return False
+    else:
+        raise argparse.ArgumentTypeError("Boolean value expected.")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser() 
     parser.add_argument("--video_path", type=str, default="./test_videos")
@@ -412,9 +422,9 @@ if __name__ == "__main__":
     parser.add_argument("--res_w", type=int, default=1280)
     parser.add_argument("--sp_size", type=int, default=1)
     parser.add_argument("--out_fps", type=float, default=None)
-    parser.add_argument("--vae_offload", type=bool, default=True)
-    parser.add_argument("--dit_offload", type=bool, default=True)
-    parser.add_argument("--empty_cache", type=bool, default=True)
+    parser.add_argument("--vae_offload", type=str2bool, default=True)
+    parser.add_argument("--dit_offload", type=str2bool, default=True)
+    parser.add_argument("--empty_cache", type=str2bool, default=True)
     args = parser.parse_args()
 
     runner = configure_runner(args.sp_size)
