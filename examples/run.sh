@@ -3,8 +3,6 @@ NUM_GPU=4
 export ASCEND_RT_VISIBLE_DEVICES=4,5,6,7
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 
-export CPLUS_INCLUDE_PATH=/usr/include/c++/12/:/usr/include/c++/12/aarch64-openEuler-linux/:$CPLUS_INCLUDE_PATH
-
 # Arm
 JEMALLOC_ARM_PATH="/usr/local/Ascend/ascend-toolkit/latest/aarch64-linux/lib64/libjemalloc.so"
 # X86
