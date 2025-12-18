@@ -18,3 +18,12 @@ register(
         apply_fn=patch_argsort,
     )
 )
+
+register(
+    NpuPatch(
+        name="group_norm",
+        issue="https://github.com/zhangtao0408/SeedVR/issues/9",
+        summary="group_norm 调用 NPU 融合算子，缺参时回退原始实现（torch.nn.functional.group_norm）",
+        apply_fn=patch_group_norm,
+    )
+)
