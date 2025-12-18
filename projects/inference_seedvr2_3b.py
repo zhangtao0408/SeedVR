@@ -14,6 +14,22 @@
 
 import os
 import torch
+
+try:
+    import torch_npu
+    from torch_npu.contrib import transfer_to_npu
+    npu_available = True
+except ImportError:
+    npu_available = False
+
+if npu_available:
+    from npu_utils.op_patch import apply_patches, list_patches
+    print(f"PATCH: {list_patches()}")
+    apply_patches(
+        skip=[],
+        verbose=True
+    )
+
 import mediapy
 from einops import rearrange
 from omegaconf import OmegaConf
@@ -37,6 +53,7 @@ from torchvision.io.video import read_video
 from torchvision.io import read_image
 import argparse
 
+import time
 
 from common.distributed import (
     get_device,
@@ -57,6 +74,7 @@ from common.distributed.ops import sync_data
 from common.seed import set_seed
 from common.partition import partition_by_groups, partition_by_size
 
+from npu_utils.tools import Profiling
 
 def configure_sequence_parallel(sp_size):
     if sp_size > 1:
@@ -67,7 +85,10 @@ def is_image_file(filename):
     return os.path.splitext(filename.lower())[1] in image_exts
 
 def configure_runner(sp_size):
-    config_path = os.path.join('./configs_3b', 'main.yaml')
+    if npu_available:
+        config_path = os.path.join('./configs_3b', 'main_npu.yaml')
+    else:
+        config_path = os.path.join('./configs_3b', 'main.yaml')
     config = load_config(config_path)
     runner = VideoDiffusionInfer(config)
     OmegaConf.set_readonly(runner.config, False)
@@ -81,7 +102,7 @@ def configure_runner(sp_size):
         runner.vae.set_memory_limit(**runner.config.vae.memory_limit)
     return runner
 
-def generation_step(runner, text_embeds_dict, cond_latents):
+def generation_step(runner, text_embeds_dict, cond_latents, dit_offload=True):
     def _move_to_cuda(x):
         return [i.to(get_device()) for i in x]
 
@@ -117,11 +138,11 @@ def generation_step(runner, text_embeds_dict, cond_latents):
         for noise, aug_noise, latent_blur in zip(noises, aug_noises, cond_latents)
     ]
 
-    with torch.no_grad(), torch.autocast("cuda", torch.bfloat16, enabled=True):
+    with torch.no_grad(), torch.autocast("npu", torch.bfloat16, enabled=True):
         video_tensors = runner.inference(
             noises=noises,
             conditions=conditions,
-            dit_offload=True,
+            dit_offload=dit_offload,
             **text_embeds_dict,
         )
 
@@ -137,7 +158,23 @@ def generation_step(runner, text_embeds_dict, cond_latents):
 
     return samples
 
-def generation_loop(runner, video_path='./test_videos', output_dir='./results', batch_size=1, cfg_scale=1.0, cfg_rescale=0.0, sample_steps=1, seed=666, res_h=1280, res_w=720, sp_size=1, out_fps=None):
+def generation_loop(
+    runner, 
+    video_path='./test_videos', 
+    output_dir='./results', 
+    batch_size=1, 
+    cfg_scale=1.0, 
+    cfg_rescale=0.0, 
+    sample_steps=1, 
+    seed=666, 
+    res_h=1280, 
+    res_w=720, 
+    sp_size=1, 
+    out_fps=None, 
+    warmup=False,
+    vae_offload=True,
+    dit_offload=True, 
+    empty_cache=True):
 
     def _build_pos_and_neg_prompt():
         # read positive prompt
@@ -172,8 +209,9 @@ def generation_loop(runner, video_path='./test_videos', output_dir='./results', 
             positive_prompts_embeds.append(
                 {"texts_pos": [text_pos_embeds], "texts_neg": [text_neg_embeds]}
             )
-        gc.collect()
-        torch.cuda.empty_cache()
+        if empty_cache:
+            gc.collect()
+            torch.cuda.empty_cache()
         return positive_prompts_embeds
 
     def cut_videos(videos, sp_size):
@@ -243,6 +281,14 @@ def generation_loop(runner, video_path='./test_videos', output_dir='./results', 
             Rearrange("t c h w -> c t h w"),
         ]
     )
+    
+    prof = Profiling(
+        wait=0,
+        warmup=1,
+        active=1,
+        repeat=0,
+        skip_first=0
+    )
 
     # generation loop
     for videos, text_embeds in tqdm(zip(original_videos_local, positive_prompts_embeds)):
@@ -267,13 +313,56 @@ def generation_loop(runner, video_path='./test_videos', output_dir='./results', 
 
         ori_lengths = [video.size(1) for video in cond_latents]
         input_videos = cond_latents
-        cond_latents = [cut_videos(video, sp_size) for video in cond_latents]
 
-        runner.dit.to("cpu")
+        prof.start()
+        # Warmup
+        if warmup:
+            cond_latents_tmp = [cut_videos(video, sp_size) for video in cond_latents]
+            if dit_offload:
+                runner.dit.to("cpu")
+            print(f"Encoding videos: {list(map(lambda x: x.size(), cond_latents_tmp))}")
+            runner.vae.to(get_device())
+            cond_latents_tmp = runner.vae_encode(cond_latents_tmp)
+            if vae_offload:
+                runner.vae.to("cpu")
+
+            runner.dit.to(get_device())
+            
+            for i, emb in enumerate(text_embeds["texts_pos"]):
+                text_embeds["texts_pos"][i] = emb.to(get_device())
+            for i, emb in enumerate(text_embeds["texts_neg"]):
+                text_embeds["texts_neg"][i] = emb.to(get_device())
+
+            samples = generation_step(runner, text_embeds, cond_latents=cond_latents_tmp, dit_offload=dit_offload)
+            if dit_offload:
+                runner.dit.to("cpu")
+
+            del cond_latents_tmp
+
+            if empty_cache:
+                gc.collect()
+                torch.cuda.empty_cache()
+
+            prof.step()
+
+        total_time = time.time()
+        preprocess_time = time.time()
+
+        cond_latents = [cut_videos(video, sp_size) for video in cond_latents]
+        if dit_offload:
+            runner.dit.to("cpu")
+        
+        preprocess_time = time.time() - preprocess_time
+        encode_time = time.time()
         print(f"Encoding videos: {list(map(lambda x: x.size(), cond_latents))}")
         runner.vae.to(get_device())
         cond_latents = runner.vae_encode(cond_latents)
-        runner.vae.to("cpu")
+        if vae_offload:
+            runner.vae.to("cpu")
+        
+        encode_time = time.time() - encode_time
+        dit_time = time.time()
+
         runner.dit.to(get_device())
 
         for i, emb in enumerate(text_embeds["texts_pos"]):
@@ -281,9 +370,13 @@ def generation_loop(runner, video_path='./test_videos', output_dir='./results', 
         for i, emb in enumerate(text_embeds["texts_neg"]):
             text_embeds["texts_neg"][i] = emb.to(get_device())
 
-        samples = generation_step(runner, text_embeds, cond_latents=cond_latents)
-        runner.dit.to("cpu")
+        samples = generation_step(runner, text_embeds, cond_latents=cond_latents, dit_offload=dit_offload)
+        if dit_offload:
+            runner.dit.to("cpu")
         del cond_latents
+
+        dit_time = time.time() - dit_time
+        post_process_time = time.time()
 
         # dump samples to the output directory
         if get_sequence_parallel_rank() == 0:
@@ -292,7 +385,9 @@ def generation_loop(runner, video_path='./test_videos', output_dir='./results', 
             ):
                 if ori_length < sample.shape[0]:
                     sample = sample[:ori_length]
-                filename = os.path.join(tgt_path, os.path.basename(path))
+                
+                file_name = os.path.basename(path).split(".")[0] + f"_pre{preprocess_time:.2f}_encode{encode_time:.2f}_dit{dit_time:.2f}" + os.path.splitext(path)[1]
+                filename = os.path.join(tgt_path, file_name)
                 # color fix
                 input = (
                     rearrange(input[:, None], "c t h w -> t c h w")
@@ -319,8 +414,27 @@ def generation_loop(runner, video_path='./test_videos', output_dir='./results', 
                     mediapy.write_video(
                         filename, sample, fps=save_fps
                     )
-        gc.collect()
-        torch.cuda.empty_cache()
+        post_process_time = time.time() - post_process_time
+        total_time = time.time() - total_time
+
+        prof.step()
+        if int(os.getenv("RANK", 0)) == 0:
+            print(f"Total time: {total_time} seconds, Preprocess time: {preprocess_time} seconds, Encode time: {encode_time} seconds, DIT time: {dit_time} seconds, Post process time: {post_process_time} seconds")
+
+        prof.stop()
+        if empty_cache:
+            gc.collect()
+            torch.cuda.empty_cache()
+
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("yes", "true", "t", "1"):
+        return True
+    elif v.lower() in ("no", "false", "f", "0"):
+        return False
+    else:
+        raise argparse.ArgumentTypeError("Boolean value expected.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser() 
@@ -331,7 +445,10 @@ if __name__ == "__main__":
     parser.add_argument("--res_w", type=int, default=1280)
     parser.add_argument("--sp_size", type=int, default=1)
     parser.add_argument("--out_fps", type=float, default=None)
+    parser.add_argument("--vae_offload", type=str2bool, default=True)
+    parser.add_argument("--dit_offload", type=str2bool, default=True)
+    parser.add_argument("--empty_cache", type=str2bool, default=True)
     args = parser.parse_args()
 
     runner = configure_runner(args.sp_size)
-    generation_loop(runner, **vars(args))
+    generation_loop(runner, **vars(args), warmup=True)
