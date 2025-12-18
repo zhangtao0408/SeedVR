@@ -22,6 +22,14 @@ try:
 except ImportError:
     npu_available = False
 
+if npu_available:
+    from npu_utils.op_patch import apply_patches, list_patches
+    print(f"PATCH: {list_patches()}")
+    apply_patches(
+        skip=[],
+        verbose=True
+    )
+
 import mediapy
 from einops import rearrange
 from omegaconf import OmegaConf
@@ -130,7 +138,7 @@ def generation_step(runner, text_embeds_dict, cond_latents, dit_offload=True):
         for noise, aug_noise, latent_blur in zip(noises, aug_noises, cond_latents)
     ]
 
-    with torch.no_grad(), torch.autocast("cuda", torch.bfloat16, enabled=True):
+    with torch.no_grad(), torch.autocast("npu", torch.bfloat16, enabled=True):
         video_tensors = runner.inference(
             noises=noises,
             conditions=conditions,
