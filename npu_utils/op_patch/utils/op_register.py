@@ -1,5 +1,5 @@
 from npu_utils.op_patch.utils import register, PATCHES, NpuPatch
-from npu_utils.op_patch.npu_ops import patch_argsort, patch_group_norm, patch_rmsnorm
+from npu_utils.op_patch.npu_ops import patch_rmsnorm, patch_argsort, patch_group_norm
 
 register(
     NpuPatch(
