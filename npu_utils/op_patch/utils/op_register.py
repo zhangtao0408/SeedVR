@@ -9,3 +9,12 @@ register(
         apply_fn=patch_rmsnorm,
     )
 )
+
+register(
+    NpuPatch(
+        name="argsort",
+        issue="https://github.com/zhangtao0408/SeedVR/issues/8",
+        summary="argsort 对不支持的 dtype 先降精度，再转回原 dtype（torch.argsort）",
+        apply_fn=patch_argsort,
+    )
+)
